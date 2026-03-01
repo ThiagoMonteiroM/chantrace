@@ -1,8 +1,10 @@
 # chantrace
 
-Drop-in tracing for Go channels. See what's flowing through your channels without changing their type.
+Concurrency observability for Go: tracing, analysis, and tooling.
 
-Channels stay as plain `chan T`. Traced operations are free functions that wrap native channel ops with a single atomic bool check (~1ns when disabled). Turn tracing on when you need visibility; leave it off in production with zero overhead.
+Trace channel operations and goroutine lifecycles with lightweight wrappers, then move from raw events to actionable diagnostics such as blocked operations, leaked goroutines, and trace-loss signals.
+
+Channels remain plain `chan T` values. Start with drop-in wrappers (`Send`, `Recv`, `Range`, `Select`, `Go`), then scale up with analyzer backends, web/tui/log sinks, and adoption tooling (`chantracecheck`, rewrite assist).
 
 ```go
 orders := chantrace.Make[Order]("orders", 10) // traced chan Order
@@ -25,7 +27,7 @@ orders <- Order{ID: 2}                         // still works, just untraced
 go get github.com/khzaw/chantrace@latest
 ```
 
-Requires Go 1.25+.
+Requires Go 1.24+.
 
 ## Quick Start
 
