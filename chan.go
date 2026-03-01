@@ -12,16 +12,12 @@ import (
 
 const maxValueRunes = 64
 
-// capturePC records the program counter at the given skip depth (~100ns).
-// The PC is resolved to file:line lazily in the drain goroutine via resolvePC.
 func capturePC(skip int) uintptr {
 	var pcs [1]uintptr
 	runtime.Callers(skip, pcs[:])
 	return pcs[0]
 }
 
-// maybeCapturePC returns the caller's caller PC if PC capture is enabled and
-// selected by sampling policy; otherwise it returns 0.
 // skip=4: runtime.Callers, capturePC, maybeCapturePC, Send/Recv/etc.
 func maybeCapturePC() uintptr {
 	if !pcCapture.Load() {
@@ -38,8 +34,6 @@ func maybeCapturePC() uintptr {
 	return capturePC(4)
 }
 
-// resolvePC converts a raw PC to file:line. Called on the cold path
-// (drain goroutine or snapshot retrieval), not on the hot emit path.
 func resolvePC(pc uintptr) (string, int) {
 	if pc == 0 {
 		return "???", 0
@@ -63,8 +57,6 @@ func truncate(s string, max int) string {
 	return string(r[:max-3]) + "..."
 }
 
-// chanInfo returns the channel pointer, registered name, and element type.
-// Falls back to reflect.TypeFor[T]().String() if the channel is not registered.
 func chanInfo[T any](ch any) (uintptr, string, string) {
 	ptr, meta := lookupChan(ch)
 	name := ""
@@ -79,7 +71,6 @@ func chanInfo[T any](ch any) (uintptr, string, string) {
 	return ptr, name, valType
 }
 
-// captureValue formats val for event recording, or returns "" if snapshots are disabled.
 func captureValue(val any) string {
 	if !snapshotValues.Load() {
 		return ""
@@ -87,8 +78,7 @@ func captureValue(val any) string {
 	return truncate(fmt.Sprintf("%v", val), maxValueRunes)
 }
 
-// Make creates and registers a channel for tracing. Returns a plain chan T.
-// The optional size argument sets the buffer capacity (like the built-in make).
+// Make creates and registers a traced channel. The optional size sets buffer capacity.
 func Make[T any](name string, size ...int) chan T {
 	if len(size) > 1 {
 		panic("chantrace.Make: too many arguments")
@@ -117,7 +107,7 @@ func Make[T any](name string, size ...int) chan T {
 	return ch
 }
 
-// Register adds an existing channel to the trace registry.
+// Register adds an existing channel to the trace registry without closing it.
 func Register[T any](ch chan T, name string) {
 	elemType := reflect.TypeFor[T]().String()
 	ptr := registerChan(ch, name, elemType, cap(ch))
@@ -138,8 +128,7 @@ func Register[T any](ch chan T, name string) {
 	}
 }
 
-// Send performs a traced send on the channel.
-// Emits ChanSendStart before the send (may block) and ChanSendDone after.
+// Send performs a traced send. Emits ChanSendStart before and ChanSendDone after.
 func Send[T any](ch chan<- T, val T) {
 	if !enabled.Load() {
 		ch <- val
@@ -178,8 +167,7 @@ func Send[T any](ch chan<- T, val T) {
 	})
 }
 
-// Recv performs a traced receive on the channel.
-// Emits ChanRecvStart before the receive (may block) and ChanRecvDone after.
+// Recv performs a traced receive. Emits ChanRecvStart before and ChanRecvDone after.
 func Recv[T any](ch <-chan T) T {
 	if !enabled.Load() {
 		return <-ch
@@ -219,8 +207,7 @@ func Recv[T any](ch <-chan T) T {
 	return val
 }
 
-// RecvOk performs a traced receive with an ok flag indicating whether the channel is open.
-// Emits ChanRecvStart before and ChanRecvDone (with RecvOK field) after.
+// RecvOk performs a traced receive that also returns whether the channel is open.
 func RecvOk[T any](ch <-chan T) (T, bool) {
 	if !enabled.Load() {
 		val, ok := <-ch
@@ -262,7 +249,7 @@ func RecvOk[T any](ch <-chan T) (T, bool) {
 	return val, ok
 }
 
-// Close performs a traced close on the channel and unregisters it.
+// Close performs a traced close and removes the channel from the registry.
 func Close[T any](ch chan T) {
 	ptr, name, valType := chanInfo[T](ch)
 	tracing := enabled.Load()
@@ -293,7 +280,7 @@ func Close[T any](ch chan T) {
 	}
 }
 
-// Range returns an iter.Seq that performs traced receives over the channel.
+// Range returns an iterator that performs traced receives over the channel.
 func Range[T any](ch <-chan T) iter.Seq[T] {
 	ptr, name, valType := chanInfo[T](ch)
 	pc := maybeCapturePC()

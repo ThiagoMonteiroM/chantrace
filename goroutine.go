@@ -5,10 +5,8 @@ import (
 	"time"
 )
 
-// Go launches a traced goroutine with the given label.
-// The context carries the parent goroutine ID for building spawn trees.
-// The child function receives a new context containing its own goroutine ID,
-// retrievable via GoID.
+// Go launches a traced goroutine. The child receives a context with its own
+// goroutine ID (see [GoID]), and its parent ID is recorded for spawn trees.
 func Go(ctx context.Context, label string, fn func(ctx context.Context)) {
 	if !enabled.Load() {
 		go fn(ctx)

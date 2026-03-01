@@ -77,10 +77,7 @@ type rangeWaitKey struct {
 	pc  uintptr
 }
 
-// Analyzer is a backend that performs active deadlock/leak diagnostics.
-//
-// It tracks in-flight start/done operation pairs and goroutine spawn/exit
-// lifecycles, then produces reports via Report().
+// Analyzer is a [Backend] that detects blocked operations and leaked goroutines.
 type Analyzer struct {
 	mu sync.Mutex
 
@@ -109,7 +106,7 @@ func NewAnalyzer(opts ...AnalyzerOption) *Analyzer {
 	return a
 }
 
-// HandleEvent ingests traced events and updates analyzer state.
+// HandleEvent implements [Backend].
 func (a *Analyzer) HandleEvent(e Event) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

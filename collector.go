@@ -10,7 +10,6 @@ const ringSize = 1 << 16 // 64K events
 
 const defaultBufSize = 16384
 
-// opIDSeq generates unique IDs for correlating Start/Done event pairs.
 var opIDSeq atomic.Uint64
 
 func nextOpID() uint64 {
@@ -23,10 +22,10 @@ type collector struct {
 	pos      uint64
 	backends []Backend
 
-	eventCh chan Event    // buffered channel for async backend dispatch
-	doneCh  chan struct{} // signals drain goroutine to exit
+	eventCh chan Event
+	doneCh  chan struct{}
 	wg      sync.WaitGroup
-	bufSize int // configurable buffer size for eventCh
+	bufSize int
 	dropped atomic.Uint64
 }
 
@@ -34,11 +33,8 @@ var defaultCollector = &collector{
 	ring: make([]Event, ringSize),
 }
 
-// emit writes an event to the ring buffer (synchronous, under lock)
-// and sends it to the drain goroutine for backend dispatch (async, non-blocking).
-// If the async buffer is full, the event is dropped from backend dispatch
-// but preserved in the ring buffer. A TraceLost event is synthesized by the
-// drain goroutine to notify backends.
+// emit writes to the ring buffer (always) and to the async dispatch channel
+// (non-blocking, dropped if full). Dropped events stay in the ring for Snapshot().
 func (c *collector) emit(e Event) {
 	c.mu.Lock()
 	c.ring[c.pos%uint64(len(c.ring))] = e
@@ -55,7 +51,6 @@ func (c *collector) emit(e Event) {
 	}
 }
 
-// start launches the background drain goroutine that dispatches events to backends.
 func (c *collector) start() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -77,7 +72,6 @@ func (c *collector) start() {
 	}()
 }
 
-// stopDrain signals the drain goroutine to finish and waits for it.
 func (c *collector) stopDrain() {
 	c.mu.Lock()
 	done := c.doneCh
@@ -91,7 +85,6 @@ func (c *collector) stopDrain() {
 	}
 }
 
-// drain reads events from eventCh and dispatches them to backends sequentially.
 func (c *collector) drain(eventCh chan Event, done chan struct{}) {
 	for {
 		select {
@@ -116,9 +109,6 @@ func (c *collector) drain(eventCh chan Event, done chan struct{}) {
 	}
 }
 
-// dispatch sends an event to all backends, recovering from panics so that
-// a buggy backend does not kill the drain goroutine.
-// Resolves deferred PC → File/Line before dispatching.
 func (c *collector) dispatch(e Event) {
 	resolveEvent(&e)
 	c.mu.Lock()
@@ -132,22 +122,17 @@ func (c *collector) dispatch(e Event) {
 	}
 }
 
-// resolveEvent fills File/Line from PC if not already resolved.
 func resolveEvent(e *Event) {
 	if e.PC != 0 && e.File == "" {
 		e.File, e.Line = resolvePC(e.PC)
 	}
 }
 
-// safeHandleEvent calls b.HandleEvent(e), recovering from any panic so
-// the drain goroutine and other backends continue operating.
 func (c *collector) safeHandleEvent(b Backend, e Event) {
 	defer func() { recover() }()
 	b.HandleEvent(e)
 }
 
-// notifyDropped checks if events were dropped and synthesizes a TraceLost
-// event so backends can invalidate stale state (e.g., unpaired Start events).
 func (c *collector) notifyDropped(backends []Backend) {
 	if n := c.dropped.Swap(0); n > 0 {
 		lost := Event{
@@ -193,7 +178,6 @@ func (c *collector) replaceBackends(backends []Backend) {
 	}
 }
 
-// snapshot returns the last n events from the ring buffer.
 func (c *collector) snapshot(n int) []Event {
 	c.mu.Lock()
 	total := c.pos

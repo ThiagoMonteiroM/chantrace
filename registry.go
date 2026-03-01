@@ -5,8 +5,7 @@ import (
 	"sync"
 )
 
-// chanMeta holds channel metadata in the registry.
-// Only the registry sync.Map holds references to chanMeta.
+// chanMeta is stored in the registry sync.Map.
 // Callers must use Close or Unregister to remove entries.
 type chanMeta struct {
 	Name     string

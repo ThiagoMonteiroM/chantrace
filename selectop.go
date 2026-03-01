@@ -72,12 +72,8 @@ func OnDefault(fn func()) SelectCase {
 	}
 }
 
-// Select performs a traced select operation using reflect.Select.
-// Emits ChanSelectStart before and ChanSelectDone after the select.
-//
-// Note: reflect.Select is significantly slower than a native select statement.
-// This overhead is acceptable for debugging but should not be used in
-// performance-critical hot paths in production.
+// Select performs a traced select via reflect.Select.
+// Significantly slower than native select; use for debugging, not hot paths.
 func Select(cases ...SelectCase) {
 	if len(cases) == 0 {
 		return
@@ -146,7 +142,7 @@ func buildReflectCases(cases []SelectCase) []reflect.SelectCase {
 		case reflect.SelectSend:
 			sendVal := reflect.ValueOf(c.val)
 			if !sendVal.IsValid() {
-				// nil interface value: create zero Value of the channel's element type
+				// nil interface: reflect.ValueOf(nil) is invalid, use zero of elem type
 				sendVal = reflect.Zero(reflect.TypeOf(c.ch).Elem())
 			}
 			rCases[i] = reflect.SelectCase{

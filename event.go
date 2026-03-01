@@ -56,14 +56,14 @@ type Event struct {
 	ValueType   string // e.g. "int", "main.Order"
 	ValueStr    string // fmt.Sprintf, truncated
 	BufLen      int    // len(ch) after op
-	BufCap      int    // cap(ch)
+	BufCap      int
 	OpID        uint64 // correlates Start/Done pairs
 	RecvOK      bool   // whether channel was open on receive
 	Dropped     uint64 // number of events dropped; only nonzero for TraceLost
 	SelectIndex int    // which case fired; only meaningful for ChanSelectDone
-	ParentGID   int64  // for GoSpawn
+	ParentGID   int64
 	GoLabel     string
-	PC          uintptr // raw program counter; resolved to File/Line lazily
+	PC          uintptr // resolved to File/Line lazily by the drain goroutine
 	File        string
 	Line        int
 }
