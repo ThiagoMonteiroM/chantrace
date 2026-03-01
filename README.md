@@ -63,6 +63,18 @@ CHANTRACE=tui go run .     # requires blank import: backend/tui
 CHANTRACE=web go run .     # requires blank import: backend/web
 ```
 
+## Examples
+
+For usage examples, see [examples](./examples).
+
+## Trade-offs
+
+- Reflection overhead: `chantrace.Select` uses `reflect.Select`, which is significantly slower than native `select`.
+- Stack parsing cost: goroutine attribution uses `runtime.Stack` parsing, which is robust but expensive in tight loops.
+- Manual instrumentation: traced visibility requires using `chantrace` wrappers (`Send`, `Recv`, `Range`, `Select`, `Go`) in concurrency paths.
+
+These are intentional trade-offs for observability. Use `WithPCCapture(false)` and/or `WithPCSampleEvery(...)` to reduce tracing overhead when needed.
+
 ## API
 
 ### Channel Operations
@@ -114,8 +126,13 @@ chantrace.Go(ctx, "worker", func(ctx context.Context) {
 Uses `reflect.Select` under the hood. Slower than native select, but gives you visibility into which cases fire.
 
 ```go
+closed := false
 chantrace.Select(
-    chantrace.OnRecv(ch1, func(v int) {
+    chantrace.OnRecvOK(ch1, func(v int, ok bool) {
+        if !ok {
+            closed = true
+            return
+        }
         fmt.Println("received:", v)
     }),
     chantrace.OnSend(ch2, 42, func() {
@@ -126,6 +143,8 @@ chantrace.Select(
     }),
 )
 ```
+
+Use `OnRecv` when you only need the value. Use `OnRecvOK` when you need to preserve `v, ok := <-ch` semantics.
 
 ### Configuration
 
@@ -149,6 +168,23 @@ defer chantrace.Shutdown()
 ```
 
 If `WithTUI` or `WithWeb` are used without their backend package imports, chantrace falls back to `WithLogStream`.
+
+### Active Analysis (Blocked/Leak Detection)
+
+```go
+analyzer := chantrace.NewAnalyzer(
+    chantrace.WithAnalyzerBlockedThreshold(50*time.Millisecond),
+    chantrace.WithAnalyzerLeakThreshold(500*time.Millisecond),
+)
+
+chantrace.Enable(
+    chantrace.WithBackend(analyzer),
+)
+defer chantrace.Shutdown()
+
+report := analyzer.Report()
+fmt.Println("blocked:", len(report.Blocked), "leaked:", len(report.Leaked))
+```
 
 ### Inspection
 
@@ -190,6 +226,8 @@ Use rewrite assist to print migration hints with suggested wrappers:
 ```bash
 go run ./cmd/chantrace-rewrite-assist ./...
 ```
+
+Both tools are additive. `chantracecheck` is CI-friendly (non-zero diagnostics), while rewrite assist is a migration helper for local planning.
 
 ## Detecting Blocked Operations
 
@@ -398,7 +436,8 @@ The Start/Done split is what makes deadlock detection possible. A Send on an unb
 The hot path (tracing enabled) does:
 - 1 atomic bool load (`enabled`)
 - 1 `sync.Map` load (channel metadata lookup)
-- 1 `runtime.Callers` call (~100ns, captures PC only)
+- 1 goroutine ID capture (`runtime.Stack`)
+- optional `runtime.Callers` call for PC capture (configurable via `WithPCCapture`/`WithPCSampleEvery`)
 - 1 mutex-protected ring buffer write
 - 1 non-blocking channel send
 
@@ -428,7 +467,7 @@ Channels must be explicitly cleaned up via `Close()` (which also closes the unde
 | `ChanRecvStart` / `ChanRecvDone` | Before/after `<-ch` | Yes |
 | `ChanClose` | `Close()` called | No |
 | `ChanSelectStart` / `ChanSelectDone` | Before/after `reflect.Select` | Yes |
-| `ChanRange` / `ChanRangeDone` | Each value / iteration complete | Per-value |
+| `ChanRangeStart` / `ChanRange` / `ChanRangeDone` | Wait start / each value / iteration complete | Yes |
 | `GoSpawn` / `GoExit` | Goroutine start / end | No |
 | `TraceLost` | Events dropped from dispatch | N/A |
 
