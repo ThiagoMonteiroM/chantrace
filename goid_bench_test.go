@@ -21,3 +21,9 @@ func BenchmarkResolvePC(b *testing.B) {
 		resolvePC(pc)
 	}
 }
+
+func BenchmarkCurrentRuntimeGID(b *testing.B) {
+	for b.Loop() {
+		currentRuntimeGID()
+	}
+}

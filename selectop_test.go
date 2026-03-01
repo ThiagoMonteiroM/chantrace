@@ -154,12 +154,15 @@ func TestSelectStartDoneOpID(t *testing.T) {
 	events := waitForEvents(rec, 5, time.Second)
 
 	var startOpID, doneOpID uint64
+	var startGID, doneGID int64
 	for _, e := range events {
 		if e.Kind == ChanSelectStart {
 			startOpID = e.OpID
+			startGID = e.GoroutineID
 		}
 		if e.Kind == ChanSelectDone {
 			doneOpID = e.OpID
+			doneGID = e.GoroutineID
 		}
 	}
 
@@ -168,6 +171,12 @@ func TestSelectStartDoneOpID(t *testing.T) {
 	}
 	if startOpID != doneOpID {
 		t.Errorf("Select OpID mismatch: start=%d done=%d", startOpID, doneOpID)
+	}
+	if startGID <= 0 || doneGID <= 0 {
+		t.Fatalf("select events should have GoroutineID > 0: start=%d done=%d", startGID, doneGID)
+	}
+	if startGID != doneGID {
+		t.Fatalf("select start/done goroutine mismatch: %d != %d", startGID, doneGID)
 	}
 }
 

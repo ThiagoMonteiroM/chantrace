@@ -15,12 +15,19 @@ func Go(ctx context.Context, label string, fn func(ctx context.Context)) {
 		return
 	}
 
-	parentGID := GoID(ctx)
+	parentGID := currentRuntimeGID()
+	if parentGID == 0 {
+		parentGID = GoID(ctx)
+	}
 	pc := capturePC()
-	childGID := nextGoroutineID()
-	childCtx := context.WithValue(ctx, goidKey, childGID)
+	childTraceID := nextGoroutineID()
+	childCtx := context.WithValue(ctx, goidKey, childTraceID)
 
 	go func() {
+		childGID := currentRuntimeGID()
+		if childGID == 0 {
+			childGID = childTraceID
+		}
 		defaultCollector.emit(Event{
 			Kind:        GoSpawn,
 			Timestamp:   time.Now().UnixNano(),

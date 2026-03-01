@@ -89,14 +89,17 @@ func Select(cases ...SelectCase) {
 
 	var pc uintptr
 	var opID uint64
+	var gid int64
 	if tracing {
 		pc = capturePC()
 		opID = nextOpID()
+		gid = currentRuntimeGID()
 		defaultCollector.emit(Event{
-			Kind:      ChanSelectStart,
-			OpID:      opID,
-			Timestamp: time.Now().UnixNano(),
-			PC:        pc,
+			Kind:        ChanSelectStart,
+			OpID:        opID,
+			Timestamp:   time.Now().UnixNano(),
+			GoroutineID: gid,
+			PC:          pc,
 		})
 	}
 
@@ -108,6 +111,7 @@ func Select(cases ...SelectCase) {
 			Kind:        ChanSelectDone,
 			OpID:        opID,
 			Timestamp:   time.Now().UnixNano(),
+			GoroutineID: gid,
 			SelectIndex: chosen,
 			PC:          pc,
 		}

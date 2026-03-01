@@ -84,9 +84,11 @@ func Make[T any](name string, size ...int) chan T {
 	ptr := registerChan(ch, name, elemType, c)
 
 	if enabled.Load() {
+		gid := currentRuntimeGID()
 		defaultCollector.emit(Event{
 			Kind:        ChanMake,
 			Timestamp:   time.Now().UnixNano(),
+			GoroutineID: gid,
 			ChannelID:   ptr,
 			ChannelName: name,
 			ValueType:   elemType,
@@ -103,9 +105,11 @@ func Register[T any](ch chan T, name string) {
 	ptr := registerChan(ch, name, elemType, cap(ch))
 
 	if enabled.Load() {
+		gid := currentRuntimeGID()
 		defaultCollector.emit(Event{
 			Kind:        ChanRegister,
 			Timestamp:   time.Now().UnixNano(),
+			GoroutineID: gid,
 			ChannelID:   ptr,
 			ChannelName: name,
 			ValueType:   elemType,
@@ -127,11 +131,13 @@ func Send[T any](ch chan<- T, val T) {
 	ptr, name, valType := chanInfo[T](ch)
 	pc := capturePC()
 	opID := nextOpID()
+	gid := currentRuntimeGID()
 
 	defaultCollector.emit(Event{
 		Kind:        ChanSendStart,
 		OpID:        opID,
 		Timestamp:   time.Now().UnixNano(),
+		GoroutineID: gid,
 		ChannelID:   ptr,
 		ChannelName: name,
 		ValueType:   valType,
@@ -145,6 +151,7 @@ func Send[T any](ch chan<- T, val T) {
 		Kind:        ChanSendDone,
 		OpID:        opID,
 		Timestamp:   time.Now().UnixNano(),
+		GoroutineID: gid,
 		ChannelID:   ptr,
 		ChannelName: name,
 		ValueType:   valType,
@@ -163,11 +170,13 @@ func Recv[T any](ch <-chan T) T {
 	ptr, name, valType := chanInfo[T](ch)
 	pc := capturePC()
 	opID := nextOpID()
+	gid := currentRuntimeGID()
 
 	defaultCollector.emit(Event{
 		Kind:        ChanRecvStart,
 		OpID:        opID,
 		Timestamp:   time.Now().UnixNano(),
+		GoroutineID: gid,
 		ChannelID:   ptr,
 		ChannelName: name,
 		ValueType:   valType,
@@ -180,6 +189,7 @@ func Recv[T any](ch <-chan T) T {
 		Kind:        ChanRecvDone,
 		OpID:        opID,
 		Timestamp:   time.Now().UnixNano(),
+		GoroutineID: gid,
 		ChannelID:   ptr,
 		ChannelName: name,
 		ValueType:   valType,
@@ -202,11 +212,13 @@ func RecvOk[T any](ch <-chan T) (T, bool) {
 	ptr, name, valType := chanInfo[T](ch)
 	pc := capturePC()
 	opID := nextOpID()
+	gid := currentRuntimeGID()
 
 	defaultCollector.emit(Event{
 		Kind:        ChanRecvStart,
 		OpID:        opID,
 		Timestamp:   time.Now().UnixNano(),
+		GoroutineID: gid,
 		ChannelID:   ptr,
 		ChannelName: name,
 		ValueType:   valType,
@@ -219,6 +231,7 @@ func RecvOk[T any](ch <-chan T) (T, bool) {
 		Kind:        ChanRecvDone,
 		OpID:        opID,
 		Timestamp:   time.Now().UnixNano(),
+		GoroutineID: gid,
 		ChannelID:   ptr,
 		ChannelName: name,
 		ValueType:   valType,
@@ -236,9 +249,11 @@ func Close[T any](ch chan T) {
 	ptr, name, valType := chanInfo[T](ch)
 
 	if enabled.Load() {
+		gid := currentRuntimeGID()
 		defaultCollector.emit(Event{
 			Kind:        ChanClose,
 			Timestamp:   time.Now().UnixNano(),
+			GoroutineID: gid,
 			ChannelID:   ptr,
 			ChannelName: name,
 			ValueType:   valType,
@@ -258,11 +273,13 @@ func Range[T any](ch <-chan T) iter.Seq[T] {
 	pc := capturePC()
 
 	return func(yield func(T) bool) {
+		gid := currentRuntimeGID()
 		for {
 			if enabled.Load() {
 				defaultCollector.emit(Event{
 					Kind:        ChanRangeStart,
 					Timestamp:   time.Now().UnixNano(),
+					GoroutineID: gid,
 					ChannelID:   ptr,
 					ChannelName: name,
 					ValueType:   valType,
@@ -276,6 +293,7 @@ func Range[T any](ch <-chan T) iter.Seq[T] {
 					defaultCollector.emit(Event{
 						Kind:        ChanRangeDone,
 						Timestamp:   time.Now().UnixNano(),
+						GoroutineID: gid,
 						ChannelID:   ptr,
 						ChannelName: name,
 						ValueType:   valType,
@@ -289,6 +307,7 @@ func Range[T any](ch <-chan T) iter.Seq[T] {
 				defaultCollector.emit(Event{
 					Kind:        ChanRange,
 					Timestamp:   time.Now().UnixNano(),
+					GoroutineID: gid,
 					ChannelID:   ptr,
 					ChannelName: name,
 					ValueType:   valType,

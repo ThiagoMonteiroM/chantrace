@@ -98,6 +98,50 @@ func TestSendRecv(t *testing.T) {
 	}
 }
 
+func TestSendRecvGoroutineID(t *testing.T) {
+	rec := setupTracing(t)
+
+	ch := Make[int]("gid-send-recv", 1)
+	Send(ch, 11)
+	Recv[int](ch)
+
+	events := waitForEvents(rec, 5, time.Second)
+
+	var sendStart, sendDone, recvStart, recvDone *Event
+	for i, e := range events {
+		if e.ChannelName != "gid-send-recv" {
+			continue
+		}
+		switch e.Kind {
+		case ChanSendStart:
+			sendStart = &events[i]
+		case ChanSendDone:
+			sendDone = &events[i]
+		case ChanRecvStart:
+			recvStart = &events[i]
+		case ChanRecvDone:
+			recvDone = &events[i]
+		}
+	}
+
+	if sendStart == nil || sendDone == nil || recvStart == nil || recvDone == nil {
+		t.Fatalf("missing expected send/recv events for channel %q", "gid-send-recv")
+	}
+
+	if sendStart.GoroutineID <= 0 || sendDone.GoroutineID <= 0 ||
+		recvStart.GoroutineID <= 0 || recvDone.GoroutineID <= 0 {
+		t.Fatalf("all send/recv events should have GoroutineID > 0: start=%d done=%d recvStart=%d recvDone=%d",
+			sendStart.GoroutineID, sendDone.GoroutineID, recvStart.GoroutineID, recvDone.GoroutineID)
+	}
+
+	if sendStart.GoroutineID != sendDone.GoroutineID {
+		t.Fatalf("send start/done goroutine mismatch: %d != %d", sendStart.GoroutineID, sendDone.GoroutineID)
+	}
+	if recvStart.GoroutineID != recvDone.GoroutineID {
+		t.Fatalf("recv start/done goroutine mismatch: %d != %d", recvStart.GoroutineID, recvDone.GoroutineID)
+	}
+}
+
 func TestSendRecvOpIDCorrelation(t *testing.T) {
 	rec := setupTracing(t)
 
@@ -275,15 +319,19 @@ func TestRangeStartBeforeValue(t *testing.T) {
 
 	startIdx := -1
 	valueIdx := -1
+	var startGID int64
+	var valueGID int64
 	for i, e := range events {
 		if e.ChannelName != "range-wait" {
 			continue
 		}
 		if e.Kind == ChanRangeStart && startIdx == -1 {
 			startIdx = i
+			startGID = e.GoroutineID
 		}
 		if e.Kind == ChanRange && valueIdx == -1 {
 			valueIdx = i
+			valueGID = e.GoroutineID
 		}
 	}
 
@@ -295,6 +343,56 @@ func TestRangeStartBeforeValue(t *testing.T) {
 	}
 	if startIdx > valueIdx {
 		t.Fatalf("ChanRangeStart index = %d, ChanRange index = %d; want start before value", startIdx, valueIdx)
+	}
+	if startGID <= 0 || valueGID <= 0 {
+		t.Fatalf("range events should have GoroutineID > 0: start=%d value=%d", startGID, valueGID)
+	}
+	if startGID != valueGID {
+		t.Fatalf("range start/value goroutine mismatch: %d != %d", startGID, valueGID)
+	}
+}
+
+func TestNativeGoHasGoroutineID(t *testing.T) {
+	rec := setupTracing(t)
+
+	ch := Make[int]("native-go-gid", 0)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		Send(ch, 99)
+	}()
+
+	got := Recv[int](ch)
+	if got != 99 {
+		t.Fatalf("Recv = %d, want 99", got)
+	}
+	<-done
+
+	events := waitForEvents(rec, 5, time.Second)
+
+	var sendGID int64
+	var recvGID int64
+	for _, e := range events {
+		if e.ChannelName != "native-go-gid" {
+			continue
+		}
+		if e.Kind == ChanSendStart {
+			sendGID = e.GoroutineID
+		}
+		if e.Kind == ChanRecvStart {
+			recvGID = e.GoroutineID
+		}
+	}
+
+	if sendGID <= 0 {
+		t.Fatalf("send event GoroutineID = %d, want > 0", sendGID)
+	}
+	if recvGID <= 0 {
+		t.Fatalf("recv event GoroutineID = %d, want > 0", recvGID)
+	}
+	if sendGID == recvGID {
+		t.Fatalf("expected different goroutine IDs for sender and receiver, both were %d", sendGID)
 	}
 }
 
