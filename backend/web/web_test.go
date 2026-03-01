@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/khzaw/chantrace"
@@ -69,6 +70,31 @@ func TestHandleEventsOverCapacityKeepsNewestInOrder(t *testing.T) {
 		want := start + i
 		if e.Line != want {
 			t.Fatalf("events[%d].Line = %d, want %d", i, e.Line, want)
+		}
+	}
+}
+
+func TestHandleIndexServesTimelineDashboard(t *testing.T) {
+	b := &backend{}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rr := httptest.NewRecorder()
+	b.handleIndex(rr, req)
+
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	body := rr.Body.String()
+	needles := []string{
+		"<title>chantrace timeline</title>",
+		`id="timeline"`,
+		`fetch("/events", { cache: "no-store" })`,
+		`placeholder="Filter by kind or channel"`,
+	}
+	for _, needle := range needles {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("index missing expected content %q", needle)
 		}
 	}
 }
