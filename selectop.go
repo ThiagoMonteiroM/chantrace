@@ -13,6 +13,7 @@ type SelectCase struct {
 	fn       any
 	name     string
 	elemType string
+	withOK   bool
 }
 
 // OnRecv creates a receive case for Select.
@@ -22,6 +23,23 @@ func OnRecv[T any](ch <-chan T, fn func(T)) SelectCase {
 		dir: reflect.SelectRecv,
 		ch:  ch,
 		fn:  fn,
+	}
+	if meta != nil {
+		sc.name = meta.Name
+		sc.elemType = meta.ElemType
+	}
+	return sc
+}
+
+// OnRecvOK creates a receive case for Select whose callback receives both the
+// value and ok flag, mirroring "v, ok := <-ch" semantics.
+func OnRecvOK[T any](ch <-chan T, fn func(T, bool)) SelectCase {
+	_, meta := lookupChan(ch)
+	sc := SelectCase{
+		dir:    reflect.SelectRecv,
+		ch:     ch,
+		fn:     fn,
+		withOK: true,
 	}
 	if meta != nil {
 		sc.name = meta.Name
@@ -100,8 +118,11 @@ func Select(cases ...SelectCase) {
 		}
 		if c.dir == reflect.SelectRecv && recv.IsValid() {
 			e.ValueStr = captureValue(recv.Interface())
+			e.RecvOK = recvOK
 		} else if c.dir == reflect.SelectSend && c.val != nil {
 			e.ValueStr = captureValue(c.val)
+		} else if c.dir == reflect.SelectRecv {
+			e.RecvOK = recvOK
 		}
 		defaultCollector.emit(e)
 	}
@@ -141,17 +162,20 @@ func buildReflectCases(cases []SelectCase) []reflect.SelectCase {
 func execCallback(c SelectCase, recv reflect.Value, recvOK bool) {
 	switch c.dir {
 	case reflect.SelectRecv:
-		if c.fn == nil {
+		rv := reflect.ValueOf(c.fn)
+		if !rv.IsValid() || rv.Kind() != reflect.Func || rv.IsNil() {
 			return
 		}
-		if recvOK && recv.IsValid() {
-			reflect.ValueOf(c.fn).Call([]reflect.Value{recv})
-		} else {
-			// Channel closed — call with zero value
-			fnType := reflect.TypeOf(c.fn)
-			zero := reflect.Zero(fnType.In(0))
-			reflect.ValueOf(c.fn).Call([]reflect.Value{zero})
+		fnType := rv.Type()
+		recvVal := recv
+		if !recvVal.IsValid() {
+			recvVal = reflect.Zero(fnType.In(0))
 		}
+		if c.withOK {
+			rv.Call([]reflect.Value{recvVal, reflect.ValueOf(recvOK)})
+			return
+		}
+		rv.Call([]reflect.Value{recvVal})
 	case reflect.SelectSend:
 		if fn, ok := c.fn.(func()); ok && fn != nil {
 			fn()

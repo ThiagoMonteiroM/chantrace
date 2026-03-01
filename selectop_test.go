@@ -170,3 +170,65 @@ func TestSelectStartDoneOpID(t *testing.T) {
 		t.Errorf("Select OpID mismatch: start=%d done=%d", startOpID, doneOpID)
 	}
 }
+
+func TestSelectRecvOKOpenChannel(t *testing.T) {
+	rec := setupTracing(t)
+
+	ch := Make[int]("select-recv-ok-open", 1)
+	Send(ch, 7)
+
+	var gotVal int
+	var gotOK bool
+	Select(
+		OnRecvOK(ch, func(v int, ok bool) {
+			gotVal = v
+			gotOK = ok
+		}),
+	)
+
+	if gotVal != 7 || !gotOK {
+		t.Fatalf("OnRecvOK got (%d, %v), want (7, true)", gotVal, gotOK)
+	}
+
+	events := waitForEvents(rec, 5, time.Second)
+	for _, e := range events {
+		if e.Kind == ChanSelectDone {
+			if !e.RecvOK {
+				t.Fatalf("ChanSelectDone.RecvOK = %v, want true", e.RecvOK)
+			}
+			return
+		}
+	}
+	t.Fatal("missing ChanSelectDone event")
+}
+
+func TestSelectRecvOKClosedChannel(t *testing.T) {
+	rec := setupTracing(t)
+
+	ch := Make[int]("select-recv-ok-closed", 1)
+	Close(ch)
+
+	var gotVal int
+	var gotOK bool
+	Select(
+		OnRecvOK(ch, func(v int, ok bool) {
+			gotVal = v
+			gotOK = ok
+		}),
+	)
+
+	if gotVal != 0 || gotOK {
+		t.Fatalf("OnRecvOK got (%d, %v), want (0, false)", gotVal, gotOK)
+	}
+
+	events := waitForEvents(rec, 4, time.Second)
+	for _, e := range events {
+		if e.Kind == ChanSelectDone {
+			if e.RecvOK {
+				t.Fatalf("ChanSelectDone.RecvOK = %v, want false", e.RecvOK)
+			}
+			return
+		}
+	}
+	t.Fatal("missing ChanSelectDone event")
+}
