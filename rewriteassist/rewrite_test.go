@@ -31,9 +31,10 @@ func mustParseAndTypecheck(t *testing.T, src string) (*token.FileSet, *ast.File,
 		t.Fatalf("ParseFile: %v", err)
 	}
 	info := &types.Info{
-		Types: make(map[ast.Expr]types.TypeAndValue),
-		Defs:  make(map[*ast.Ident]types.Object),
-		Uses:  make(map[*ast.Ident]types.Object),
+		Types:  make(map[ast.Expr]types.TypeAndValue),
+		Defs:   make(map[*ast.Ident]types.Object),
+		Uses:   make(map[*ast.Ident]types.Object),
+		Scopes: make(map[ast.Node]*types.Scope),
 	}
 	conf := &types.Config{
 		Importer: stubImporter{base: importer.Default()},
@@ -215,6 +216,60 @@ func f(ch chan int) {
 	got := RewriteFile(fset, file, info, cfg)
 	if len(got.Issues) != 0 {
 		t.Fatalf("issue count = %d, want 0", len(got.Issues))
+	}
+}
+
+func TestRewriteFileGoStmtSafeAutoRewrite(t *testing.T) {
+	const src = `package p
+import "context"
+func worker() {}
+func f(ctx context.Context) {
+	go worker()
+}
+`
+
+	fset, file, info := mustParseAndTypecheck(t, src)
+	cfg := DefaultRewriteConfig()
+	cfg.RewriteGo = true
+	got := RewriteFile(fset, file, info, cfg)
+	if !got.Changed {
+		t.Fatalf("Changed = false, want true; issues=%+v", got.Issues)
+	}
+	out := mustFormat(t, fset, file)
+	if !strings.Contains(out, `chantrace.Go(ctx, "worker", func(_ context.Context) {`) {
+		t.Fatalf("missing chantrace.Go rewrite:\n%s", out)
+	}
+	if !strings.Contains(out, "worker()") {
+		t.Fatalf("missing wrapped go call:\n%s", out)
+	}
+}
+
+func TestRewriteFileGoStmtNoContextFallsBackToIssue(t *testing.T) {
+	const src = `package p
+func worker() {}
+func f() {
+	go worker()
+}
+`
+
+	fset, file, info := mustParseAndTypecheck(t, src)
+	cfg := DefaultRewriteConfig()
+	cfg.RewriteGo = true
+	got := RewriteFile(fset, file, info, cfg)
+	if got.Changed {
+		t.Fatal("Changed = true, want false")
+	}
+	if len(got.Issues) != 1 {
+		t.Fatalf("issue count = %d, want 1", len(got.Issues))
+	}
+	if got.Issues[0].Kind != "go" {
+		t.Fatalf("issue kind = %q, want go", got.Issues[0].Kind)
+	}
+	if !strings.Contains(got.Issues[0].Message, "context.Context") {
+		t.Fatalf("unexpected issue message: %q", got.Issues[0].Message)
+	}
+	if !strings.Contains(got.Issues[0].Scaffold, "chantrace.Go(ctx") {
+		t.Fatalf("missing go scaffold:\n%s", got.Issues[0].Scaffold)
 	}
 }
 

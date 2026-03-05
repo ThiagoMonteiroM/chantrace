@@ -118,7 +118,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "chantrace-patch: reversible chantrace codemod workflow")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  chantrace-patch apply [--dry-run] [--include glob] [--exclude glob] [--only-file path] [--only-glob glob] [--no-send] [--no-recv] [--no-range] [--include-generated] [packages...]")
+	fmt.Fprintln(w, "  chantrace-patch apply [--dry-run] [--include glob] [--exclude glob] [--only-file path] [--only-glob glob] [--rewrite-go] [--no-send] [--no-recv] [--no-range] [--include-generated] [packages...]")
 	fmt.Fprintln(w, "  chantrace-patch status")
 	fmt.Fprintln(w, "  chantrace-patch revert [--force]")
 	fmt.Fprintln(w)
@@ -135,6 +135,7 @@ func runApply(args []string) int {
 	var noSend bool
 	var noRecv bool
 	var noRange bool
+	var rewriteGo bool
 	var noGoNotes bool
 	var noSelectNotes bool
 	var includeGenerated bool
@@ -146,6 +147,7 @@ func runApply(args []string) int {
 	fs.BoolVar(&noSend, "no-send", false, "do not rewrite channel sends")
 	fs.BoolVar(&noRecv, "no-recv", false, "do not rewrite channel receives")
 	fs.BoolVar(&noRange, "no-range", false, "do not rewrite range-over-channel")
+	fs.BoolVar(&rewriteGo, "rewrite-go", false, "rewrite go statements when a context.Context variable is unambiguous in scope")
 	fs.BoolVar(&noGoNotes, "no-go-notes", false, "do not emit manual migration notes for go statements")
 	fs.BoolVar(&noSelectNotes, "no-select-notes", false, "do not emit manual migration notes for select statements")
 	fs.BoolVar(&includeGenerated, "include-generated", false, "allow rewriting generated Go files")
@@ -195,6 +197,7 @@ func runApply(args []string) int {
 	rewriteCfg.RewriteSend = !noSend
 	rewriteCfg.RewriteRecv = !noRecv
 	rewriteCfg.RewriteRange = !noRange
+	rewriteCfg.RewriteGo = rewriteGo
 	rewriteCfg.ReportGoStmt = !noGoNotes
 	rewriteCfg.ReportSelect = !noSelectNotes
 
@@ -485,10 +488,11 @@ func runStatus(args []string) int {
 	fmt.Printf("created at: %s\n", m.CreatedAt)
 	fmt.Printf("files: %d\n", len(m.Files))
 	fmt.Printf("manual notes: %d\n", len(m.Issues))
-	fmt.Printf("rewrite config: send=%t recv=%t range=%t go-notes=%t select-notes=%t\n",
+	fmt.Printf("rewrite config: send=%t recv=%t range=%t rewrite-go=%t go-notes=%t select-notes=%t\n",
 		m.RewriteConfig.RewriteSend,
 		m.RewriteConfig.RewriteRecv,
 		m.RewriteConfig.RewriteRange,
+		m.RewriteConfig.RewriteGo,
 		m.RewriteConfig.ReportGoStmt,
 		m.RewriteConfig.ReportSelect,
 	)
