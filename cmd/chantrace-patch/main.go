@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/ast"
 	"go/format"
 	"os"
 	"path/filepath"
@@ -110,7 +111,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "chantrace-patch: reversible chantrace codemod workflow")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  chantrace-patch apply [--dry-run] [--include glob] [--exclude glob] [--no-send] [--no-recv] [--no-range] [packages...]")
+	fmt.Fprintln(w, "  chantrace-patch apply [--dry-run] [--include glob] [--exclude glob] [--no-send] [--no-recv] [--no-range] [--include-generated] [packages...]")
 	fmt.Fprintln(w, "  chantrace-patch status")
 	fmt.Fprintln(w, "  chantrace-patch revert [--force]")
 	fmt.Fprintln(w)
@@ -129,6 +130,7 @@ func runApply(args []string) int {
 	var noRange bool
 	var noGoNotes bool
 	var noSelectNotes bool
+	var includeGenerated bool
 	var includes stringList
 	var excludes stringList
 	fs.BoolVar(&dryRun, "dry-run", false, "print planned changes without writing files")
@@ -137,6 +139,7 @@ func runApply(args []string) int {
 	fs.BoolVar(&noRange, "no-range", false, "do not rewrite range-over-channel")
 	fs.BoolVar(&noGoNotes, "no-go-notes", false, "do not emit manual migration notes for go statements")
 	fs.BoolVar(&noSelectNotes, "no-select-notes", false, "do not emit manual migration notes for select statements")
+	fs.BoolVar(&includeGenerated, "include-generated", false, "allow rewriting generated Go files")
 	fs.Var(&includes, "include", "path glob to include (repeatable, matches repo-relative slash paths)")
 	fs.Var(&excludes, "exclude", "path glob to exclude (repeatable, matches repo-relative slash paths)")
 	if err := fs.Parse(args); err != nil {
@@ -195,7 +198,7 @@ func runApply(args []string) int {
 		return 2
 	}
 
-	plan, err := buildPlan(root, pkgs, rewriteCfg, includePatterns, excludePatterns)
+	plan, err := buildPlan(root, pkgs, rewriteCfg, includePatterns, excludePatterns, includeGenerated)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "build patch plan: %v\n", err)
 		return 1
@@ -429,6 +432,22 @@ func runStatus(args []string) int {
 	fmt.Printf("created at: %s\n", m.CreatedAt)
 	fmt.Printf("files: %d\n", len(m.Files))
 	fmt.Printf("manual notes: %d\n", len(m.Issues))
+	fmt.Printf("rewrite config: send=%t recv=%t range=%t go-notes=%t select-notes=%t\n",
+		m.RewriteConfig.RewriteSend,
+		m.RewriteConfig.RewriteRecv,
+		m.RewriteConfig.RewriteRange,
+		m.RewriteConfig.ReportGoStmt,
+		m.RewriteConfig.ReportSelect,
+	)
+	if len(m.Includes) > 0 {
+		fmt.Printf("includes: %s\n", strings.Join(m.Includes, ", "))
+	}
+	if len(m.Excludes) > 0 {
+		fmt.Printf("excludes: %s\n", strings.Join(m.Excludes, ", "))
+	}
+	if len(m.Issues) > 0 {
+		printIssues(m.Issues)
+	}
 	if len(drifted) == 0 {
 		fmt.Println("drift: clean")
 		return 0
@@ -459,7 +478,7 @@ func loadPackages(patterns []string) ([]*packages.Package, error) {
 	return pkgs, nil
 }
 
-func buildPlan(root string, pkgs []*packages.Package, cfg rewriteassist.RewriteConfig, includes, excludes []string) (plan, error) {
+func buildPlan(root string, pkgs []*packages.Package, cfg rewriteassist.RewriteConfig, includes, excludes []string, includeGenerated bool) (plan, error) {
 	var out plan
 
 	seen := make(map[string]struct{})
@@ -484,6 +503,15 @@ func buildPlan(root string, pkgs []*packages.Package, cfg rewriteassist.RewriteC
 				return out, err
 			}
 			if !ok {
+				continue
+			}
+			if !includeGenerated && ast.IsGenerated(file) {
+				out.issues = append(out.issues, manifestNote{
+					Path:    rel,
+					Line:    1,
+					Column:  1,
+					Message: "generated file skipped (use --include-generated to rewrite)",
+				})
 				continue
 			}
 
