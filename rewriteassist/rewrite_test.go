@@ -273,6 +273,52 @@ func f() {
 	}
 }
 
+func TestRewriteFileGoStmtUsesSingleNonCtxContextVar(t *testing.T) {
+	const src = `package p
+import "context"
+func worker() {}
+func f(parent context.Context) {
+	go worker()
+}
+`
+
+	fset, file, info := mustParseAndTypecheck(t, src)
+	cfg := DefaultRewriteConfig()
+	cfg.RewriteGo = true
+	got := RewriteFile(fset, file, info, cfg)
+	if !got.Changed {
+		t.Fatalf("Changed = false, want true; issues=%+v", got.Issues)
+	}
+	out := mustFormat(t, fset, file)
+	if !strings.Contains(out, `chantrace.Go(parent, "worker", func(_ context.Context) {`) {
+		t.Fatalf("missing rewrite using non-ctx context var:\n%s", out)
+	}
+}
+
+func TestRewriteFileGoStmtAmbiguousContextVarsFallsBack(t *testing.T) {
+	const src = `package p
+import "context"
+func worker() {}
+func f(parent context.Context, req context.Context) {
+	go worker()
+}
+`
+
+	fset, file, info := mustParseAndTypecheck(t, src)
+	cfg := DefaultRewriteConfig()
+	cfg.RewriteGo = true
+	got := RewriteFile(fset, file, info, cfg)
+	if got.Changed {
+		t.Fatal("Changed = true, want false")
+	}
+	if len(got.Issues) != 1 {
+		t.Fatalf("issue count = %d, want 1", len(got.Issues))
+	}
+	if !strings.Contains(got.Issues[0].Message, "multiple context.Context variables") {
+		t.Fatalf("unexpected ambiguity message: %q", got.Issues[0].Message)
+	}
+}
+
 func TestRewriteFileRespectsImportAlias(t *testing.T) {
 	const src = `package p
 import ct "github.com/khzaw/chantrace"
