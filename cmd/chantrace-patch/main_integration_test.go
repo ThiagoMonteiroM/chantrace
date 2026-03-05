@@ -81,12 +81,19 @@ func TestPatchApplyStatusRevertRoundTrip(t *testing.T) {
 	if active == "" {
 		t.Fatal("expected non-empty active patch id")
 	}
+	notes := readFile(t, manualNotesFile)
+	if !strings.Contains(notes, "chantrace manual migration notes") {
+		t.Fatalf("manual notes report missing header:\n%s", notes)
+	}
 
 	if code := runRevert(nil); code != 0 {
 		t.Fatalf("runRevert code = %d, want 0", code)
 	}
 	if got := readFile(t, "sample.go"); got != orig {
 		t.Fatalf("sample.go not restored after revert:\n%s", got)
+	}
+	if _, err := os.Stat(manualNotesFile); !os.IsNotExist(err) {
+		t.Fatalf("manual notes report still exists after revert: err=%v", err)
 	}
 }
 
@@ -109,5 +116,40 @@ func TestPatchRevertRefusesDriftUnlessForced(t *testing.T) {
 	}
 	if got := readFile(t, "sample.go"); got != orig {
 		t.Fatalf("sample.go not restored after forced revert:\n%s", got)
+	}
+}
+
+func TestPatchApplyOnlyFileFilter(t *testing.T) {
+	dir := t.TempDir()
+	chdir(t, dir)
+	writeFile(t, "go.mod", "module example.com/tmp\n\ngo 1.24.0\n")
+	writeFile(t, "a.go", `package tmp
+func a(ch chan int) { ch <- 1 }
+`)
+	writeFile(t, "b.go", `package tmp
+func b(ch chan int) { ch <- 2 }
+`)
+
+	origA := readFile(t, "a.go")
+	origB := readFile(t, "b.go")
+	if code := runApply([]string{"--only-file", "a.go", "./..."}); code != 0 {
+		t.Fatalf("runApply code = %d, want 0", code)
+	}
+
+	if got := readFile(t, "a.go"); !strings.Contains(got, "chantrace.Send(") {
+		t.Fatalf("a.go not rewritten:\n%s", got)
+	}
+	if got := readFile(t, "b.go"); got != origB {
+		t.Fatalf("b.go unexpectedly changed:\n%s", got)
+	}
+
+	if code := runRevert(nil); code != 0 {
+		t.Fatalf("runRevert code = %d, want 0", code)
+	}
+	if got := readFile(t, "a.go"); got != origA {
+		t.Fatalf("a.go not restored:\n%s", got)
+	}
+	if got := readFile(t, "b.go"); got != origB {
+		t.Fatalf("b.go changed after revert:\n%s", got)
 	}
 }

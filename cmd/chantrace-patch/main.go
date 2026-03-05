@@ -24,6 +24,7 @@ const (
 	patchesDirName   = ".chantrace/patches"
 	activePatchFile  = "ACTIVE"
 	manifestFileName = "manifest.json"
+	manualNotesFile  = ".chantrace/manual-notes.md"
 )
 
 type manifest struct {
@@ -34,6 +35,9 @@ type manifest struct {
 	RewriteConfig rewriteassist.RewriteConfig `json:"rewrite_config"`
 	Includes      []string                    `json:"includes,omitempty"`
 	Excludes      []string                    `json:"excludes,omitempty"`
+	OnlyFiles     []string                    `json:"only_files,omitempty"`
+	OnlyGlobs     []string                    `json:"only_globs,omitempty"`
+	ManualNotes   string                      `json:"manual_notes,omitempty"`
 	Files         []manifestFile              `json:"files"`
 	Issues        []manifestNote              `json:"issues,omitempty"`
 }
@@ -47,10 +51,13 @@ type manifestFile struct {
 }
 
 type manifestNote struct {
-	Path    string `json:"path"`
-	Line    int    `json:"line"`
-	Column  int    `json:"column"`
-	Message string `json:"message"`
+	Path       string `json:"path"`
+	Line       int    `json:"line"`
+	Column     int    `json:"column"`
+	Kind       string `json:"kind,omitempty"`
+	Message    string `json:"message"`
+	Suggestion string `json:"suggestion,omitempty"`
+	Scaffold   string `json:"scaffold,omitempty"`
 }
 
 type plannedFile struct {
@@ -111,7 +118,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "chantrace-patch: reversible chantrace codemod workflow")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  chantrace-patch apply [--dry-run] [--include glob] [--exclude glob] [--no-send] [--no-recv] [--no-range] [--include-generated] [packages...]")
+	fmt.Fprintln(w, "  chantrace-patch apply [--dry-run] [--include glob] [--exclude glob] [--only-file path] [--only-glob glob] [--no-send] [--no-recv] [--no-range] [--include-generated] [packages...]")
 	fmt.Fprintln(w, "  chantrace-patch status")
 	fmt.Fprintln(w, "  chantrace-patch revert [--force]")
 	fmt.Fprintln(w)
@@ -133,6 +140,8 @@ func runApply(args []string) int {
 	var includeGenerated bool
 	var includes stringList
 	var excludes stringList
+	var onlyFiles stringList
+	var onlyGlobs stringList
 	fs.BoolVar(&dryRun, "dry-run", false, "print planned changes without writing files")
 	fs.BoolVar(&noSend, "no-send", false, "do not rewrite channel sends")
 	fs.BoolVar(&noRecv, "no-recv", false, "do not rewrite channel receives")
@@ -142,6 +151,8 @@ func runApply(args []string) int {
 	fs.BoolVar(&includeGenerated, "include-generated", false, "allow rewriting generated Go files")
 	fs.Var(&includes, "include", "path glob to include (repeatable, matches repo-relative slash paths)")
 	fs.Var(&excludes, "exclude", "path glob to exclude (repeatable, matches repo-relative slash paths)")
+	fs.Var(&onlyFiles, "only-file", "rewrite only this repo-relative file (repeatable)")
+	fs.Var(&onlyGlobs, "only-glob", "rewrite only files matching this glob (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -189,6 +200,8 @@ func runApply(args []string) int {
 
 	includePatterns := []string(includes)
 	excludePatterns := []string(excludes)
+	onlyGlobPatterns := []string(onlyGlobs)
+	onlyFilePaths := normalizeOnlyFiles(root, []string(onlyFiles))
 	if err := validateGlobPatterns(includePatterns); err != nil {
 		fmt.Fprintf(os.Stderr, "invalid --include pattern: %v\n", err)
 		return 2
@@ -197,8 +210,12 @@ func runApply(args []string) int {
 		fmt.Fprintf(os.Stderr, "invalid --exclude pattern: %v\n", err)
 		return 2
 	}
+	if err := validateGlobPatterns(onlyGlobPatterns); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid --only-glob pattern: %v\n", err)
+		return 2
+	}
 
-	plan, err := buildPlan(root, pkgs, rewriteCfg, includePatterns, excludePatterns, includeGenerated)
+	plan, err := buildPlan(root, pkgs, rewriteCfg, includePatterns, excludePatterns, onlyFilePaths, onlyGlobPatterns, includeGenerated)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "build patch plan: %v\n", err)
 		return 1
@@ -222,6 +239,27 @@ func runApply(args []string) int {
 		if len(plan.issues) > 0 {
 			fmt.Printf("manual notes: %d\n", len(plan.issues))
 			printIssues(plan.issues)
+			if !dryRun {
+				m := manifest{
+					ID:            time.Now().UTC().Format("20060102T150405Z"),
+					CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+					Root:          root,
+					Patterns:      append([]string(nil), patterns...),
+					RewriteConfig: rewriteCfg,
+					Includes:      append([]string(nil), includePatterns...),
+					Excludes:      append([]string(nil), excludePatterns...),
+					OnlyFiles:     append([]string(nil), onlyFilePaths...),
+					OnlyGlobs:     append([]string(nil), onlyGlobPatterns...),
+					ManualNotes:   filepath.ToSlash(manualNotesFile),
+					Issues:        plan.issues,
+				}
+				reportPath := filepath.Join(root, manualNotesFile)
+				if err := writeManualNotesReport(reportPath, m); err != nil {
+					fmt.Fprintf(os.Stderr, "write manual notes report: %v\n", err)
+					return 1
+				}
+				fmt.Printf("manual notes report: %s\n", m.ManualNotes)
+			}
 		}
 		return 0
 	}
@@ -257,6 +295,8 @@ func runApply(args []string) int {
 		RewriteConfig: rewriteCfg,
 		Includes:      append([]string(nil), includePatterns...),
 		Excludes:      append([]string(nil), excludePatterns...),
+		OnlyFiles:     append([]string(nil), onlyFilePaths...),
+		OnlyGlobs:     append([]string(nil), onlyGlobPatterns...),
 		Issues:        plan.issues,
 	}
 
@@ -284,6 +324,12 @@ func runApply(args []string) int {
 		})
 	}
 
+	m.ManualNotes = filepath.ToSlash(manualNotesFile)
+	reportPath := filepath.Join(root, manualNotesFile)
+	if err := writeManualNotesReport(reportPath, m); err != nil {
+		fmt.Fprintf(os.Stderr, "write manual notes report: %v\n", err)
+		return 1
+	}
 	if err := writeManifest(patchDir, m); err != nil {
 		fmt.Fprintf(os.Stderr, "write manifest: %v\n", err)
 		return 1
@@ -294,6 +340,9 @@ func runApply(args []string) int {
 	}
 
 	fmt.Printf("applied patch %s (%d files)\n", patchID, len(m.Files))
+	if len(m.Issues) > 0 {
+		fmt.Printf("manual notes report: %s\n", m.ManualNotes)
+	}
 	return 0
 }
 
@@ -328,6 +377,9 @@ func runRevert(args []string) int {
 	}
 	if patchID == "" {
 		fmt.Println("no active patch")
+		if _, err := os.Stat(filepath.Join(root, manualNotesFile)); err == nil {
+			fmt.Printf("manual report: %s\n", filepath.ToSlash(manualNotesFile))
+		}
 		return 0
 	}
 
@@ -379,6 +431,7 @@ func runRevert(args []string) int {
 		fmt.Fprintf(os.Stderr, "clear active patch: %v\n", err)
 		return 1
 	}
+	_ = os.Remove(filepath.Join(root, manualNotesFile))
 
 	fmt.Printf("reverted patch %s (%d files)\n", patchID, len(m.Files))
 	return 0
@@ -445,6 +498,15 @@ func runStatus(args []string) int {
 	if len(m.Excludes) > 0 {
 		fmt.Printf("excludes: %s\n", strings.Join(m.Excludes, ", "))
 	}
+	if len(m.OnlyFiles) > 0 {
+		fmt.Printf("only-files: %s\n", strings.Join(m.OnlyFiles, ", "))
+	}
+	if len(m.OnlyGlobs) > 0 {
+		fmt.Printf("only-globs: %s\n", strings.Join(m.OnlyGlobs, ", "))
+	}
+	if m.ManualNotes != "" {
+		fmt.Printf("manual report: %s\n", m.ManualNotes)
+	}
 	if len(m.Issues) > 0 {
 		printIssues(m.Issues)
 	}
@@ -478,7 +540,7 @@ func loadPackages(patterns []string) ([]*packages.Package, error) {
 	return pkgs, nil
 }
 
-func buildPlan(root string, pkgs []*packages.Package, cfg rewriteassist.RewriteConfig, includes, excludes []string, includeGenerated bool) (plan, error) {
+func buildPlan(root string, pkgs []*packages.Package, cfg rewriteassist.RewriteConfig, includes, excludes, onlyFiles, onlyGlobs []string, includeGenerated bool) (plan, error) {
 	var out plan
 
 	seen := make(map[string]struct{})
@@ -498,7 +560,7 @@ func buildPlan(root string, pkgs []*packages.Package, cfg rewriteassist.RewriteC
 			seen[abs] = struct{}{}
 
 			rel := relPath(root, abs)
-			ok, err := matchFilePath(rel, includes, excludes)
+			ok, err := matchFilePath(rel, includes, excludes, onlyFiles, onlyGlobs)
 			if err != nil {
 				return out, err
 			}
@@ -507,10 +569,12 @@ func buildPlan(root string, pkgs []*packages.Package, cfg rewriteassist.RewriteC
 			}
 			if !includeGenerated && ast.IsGenerated(file) {
 				out.issues = append(out.issues, manifestNote{
-					Path:    rel,
-					Line:    1,
-					Column:  1,
-					Message: "generated file skipped (use --include-generated to rewrite)",
+					Path:       rel,
+					Line:       1,
+					Column:     1,
+					Kind:       "generated",
+					Message:    "generated file skipped (use --include-generated to rewrite)",
+					Suggestion: "rerun apply with --include-generated if rewriting this file is intentional",
 				})
 				continue
 			}
@@ -523,10 +587,13 @@ func buildPlan(root string, pkgs []*packages.Package, cfg rewriteassist.RewriteC
 				}
 				rel := relPath(root, issuePath)
 				out.issues = append(out.issues, manifestNote{
-					Path:    rel,
-					Line:    issue.Position.Line,
-					Column:  issue.Position.Column,
-					Message: issue.Message,
+					Path:       rel,
+					Line:       issue.Position.Line,
+					Column:     issue.Position.Column,
+					Kind:       issue.Kind,
+					Message:    issue.Message,
+					Suggestion: issue.Suggestion,
+					Scaffold:   issue.Scaffold,
 				})
 			}
 			if !res.Changed {
@@ -571,11 +638,18 @@ func buildPlan(root string, pkgs []*packages.Package, cfg rewriteassist.RewriteC
 func printIssues(issues []manifestNote) {
 	fmt.Println("manual notes:")
 	for _, n := range issues {
-		if n.Line > 0 {
-			fmt.Printf("  %s:%d:%d: %s\n", n.Path, n.Line, n.Column, n.Message)
-			continue
+		prefix := ""
+		if n.Kind != "" {
+			prefix = "[" + n.Kind + "] "
 		}
-		fmt.Printf("  %s: %s\n", n.Path, n.Message)
+		if n.Line > 0 {
+			fmt.Printf("  %s:%d:%d: %s%s\n", n.Path, n.Line, n.Column, prefix, n.Message)
+		} else {
+			fmt.Printf("  %s: %s%s\n", n.Path, prefix, n.Message)
+		}
+		if n.Suggestion != "" {
+			fmt.Printf("    suggestion: %s\n", n.Suggestion)
+		}
 	}
 }
 
@@ -664,6 +738,22 @@ func relPath(root, target string) string {
 	return filepath.ToSlash(rel)
 }
 
+func normalizeOnlyFiles(root string, files []string) []string {
+	out := make([]string, 0, len(files))
+	for _, p := range files {
+		if p == "" {
+			continue
+		}
+		if filepath.IsAbs(p) {
+			out = append(out, relPath(root, p))
+			continue
+		}
+		out = append(out, filepath.ToSlash(filepath.Clean(p)))
+	}
+	sort.Strings(out)
+	return out
+}
+
 func validateGlobPatterns(patterns []string) error {
 	for _, p := range patterns {
 		if _, err := filepath.Match(p, "sample/path.go"); err != nil {
@@ -673,8 +763,33 @@ func validateGlobPatterns(patterns []string) error {
 	return nil
 }
 
-func matchFilePath(rel string, includes, excludes []string) (bool, error) {
+func matchFilePath(rel string, includes, excludes, onlyFiles, onlyGlobs []string) (bool, error) {
 	rel = filepath.ToSlash(rel)
+	if len(onlyFiles) > 0 || len(onlyGlobs) > 0 {
+		allowed := false
+		for _, p := range onlyFiles {
+			if rel == filepath.ToSlash(p) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			for _, p := range onlyGlobs {
+				m, err := filepath.Match(p, rel)
+				if err != nil {
+					return false, fmt.Errorf("only-glob pattern %q: %w", p, err)
+				}
+				if m {
+					allowed = true
+					break
+				}
+			}
+		}
+		if !allowed {
+			return false, nil
+		}
+	}
+
 	included := len(includes) == 0
 	for _, p := range includes {
 		m, err := filepath.Match(p, rel)
@@ -699,4 +814,45 @@ func matchFilePath(rel string, includes, excludes []string) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+func writeManualNotesReport(path string, m manifest) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	var b strings.Builder
+	b.WriteString("# chantrace manual migration notes\n\n")
+	b.WriteString(fmt.Sprintf("- Patch ID: `%s`\n", m.ID))
+	b.WriteString(fmt.Sprintf("- Generated: %s\n", m.CreatedAt))
+	b.WriteString(fmt.Sprintf("- Rewritten files: %d\n", len(m.Files)))
+	b.WriteString(fmt.Sprintf("- Manual notes: %d\n\n", len(m.Issues)))
+	if len(m.Issues) == 0 {
+		b.WriteString("No manual migration notes for this patch.\n")
+		return os.WriteFile(path, []byte(b.String()), 0o644)
+	}
+	for i, n := range m.Issues {
+		loc := n.Path
+		if n.Line > 0 {
+			loc = fmt.Sprintf("%s:%d:%d", n.Path, n.Line, n.Column)
+		}
+		kind := n.Kind
+		if kind == "" {
+			kind = "note"
+		}
+		b.WriteString(fmt.Sprintf("## %d. `%s` (%s)\n\n", i+1, loc, kind))
+		b.WriteString(n.Message + "\n\n")
+		if n.Suggestion != "" {
+			b.WriteString("Suggestion:\n")
+			b.WriteString(fmt.Sprintf("- %s\n\n", n.Suggestion))
+		}
+		if n.Scaffold != "" {
+			b.WriteString("Scaffold:\n\n```go\n")
+			b.WriteString(n.Scaffold)
+			if !strings.HasSuffix(n.Scaffold, "\n") {
+				b.WriteString("\n")
+			}
+			b.WriteString("```\n\n")
+		}
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

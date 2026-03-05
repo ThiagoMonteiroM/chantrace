@@ -123,8 +123,14 @@ func f() {
 	if len(got.Issues) != 1 {
 		t.Fatalf("issue count = %d, want 1", len(got.Issues))
 	}
+	if got.Issues[0].Kind != "go" {
+		t.Fatalf("issue kind = %q, want %q", got.Issues[0].Kind, "go")
+	}
 	if !strings.Contains(got.Issues[0].Message, "manual migration") {
 		t.Fatalf("unexpected issue message: %q", got.Issues[0].Message)
+	}
+	if !strings.Contains(got.Issues[0].Suggestion, "chantrace.Go") {
+		t.Fatalf("unexpected go suggestion: %q", got.Issues[0].Suggestion)
 	}
 }
 
@@ -148,9 +154,48 @@ func f(ch chan int, ro <-chan int) {
 	if len(got.Issues) == 0 {
 		t.Fatal("expected manual migration issue for select")
 	}
+	if got.Issues[0].Kind != "select" {
+		t.Fatalf("issue kind = %q, want %q", got.Issues[0].Kind, "select")
+	}
+	if !strings.Contains(got.Issues[0].Scaffold, "chantrace.Select(") {
+		t.Fatalf("missing select scaffold header:\n%s", got.Issues[0].Scaffold)
+	}
+	if !strings.Contains(got.Issues[0].Scaffold, "chantrace.OnSend(") {
+		t.Fatalf("missing OnSend scaffold:\n%s", got.Issues[0].Scaffold)
+	}
+	if !strings.Contains(got.Issues[0].Scaffold, "chantrace.OnRecv(") {
+		t.Fatalf("missing OnRecv scaffold:\n%s", got.Issues[0].Scaffold)
+	}
+	if !strings.Contains(got.Issues[0].Scaffold, "chantrace.OnDefault(") {
+		t.Fatalf("missing OnDefault scaffold:\n%s", got.Issues[0].Scaffold)
+	}
 	out := mustFormat(t, fset, file)
 	if strings.Contains(out, "chantrace.Send(") || strings.Contains(out, "chantrace.Recv(") {
 		t.Fatalf("select comm unexpectedly rewritten:\n%s", out)
+	}
+}
+
+func TestRewriteFileSelectRecvOkScaffold(t *testing.T) {
+	const src = `package p
+func f(ro <-chan int) {
+	select {
+	case v, ok := <-ro:
+		_, _ = v, ok
+	}
+}
+`
+
+	fset, file, info := mustParseAndTypecheck(t, src)
+	got := RewriteFile(fset, file, info, DefaultRewriteConfig())
+	if len(got.Issues) == 0 {
+		t.Fatal("expected select issue")
+	}
+	scaffold := got.Issues[0].Scaffold
+	if !strings.Contains(scaffold, "chantrace.OnRecvOK(") {
+		t.Fatalf("missing OnRecvOK in scaffold:\n%s", scaffold)
+	}
+	if !strings.Contains(scaffold, "func(v int, ok bool)") {
+		t.Fatalf("missing typed recvok callback in scaffold:\n%s", scaffold)
 	}
 }
 
