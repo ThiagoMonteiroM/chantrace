@@ -26,12 +26,15 @@ const (
 )
 
 type manifest struct {
-	ID        string         `json:"id"`
-	CreatedAt string         `json:"created_at"`
-	Root      string         `json:"root"`
-	Patterns  []string       `json:"patterns"`
-	Files     []manifestFile `json:"files"`
-	Issues    []manifestNote `json:"issues,omitempty"`
+	ID            string                      `json:"id"`
+	CreatedAt     string                      `json:"created_at"`
+	Root          string                      `json:"root"`
+	Patterns      []string                    `json:"patterns"`
+	RewriteConfig rewriteassist.RewriteConfig `json:"rewrite_config"`
+	Includes      []string                    `json:"includes,omitempty"`
+	Excludes      []string                    `json:"excludes,omitempty"`
+	Files         []manifestFile              `json:"files"`
+	Issues        []manifestNote              `json:"issues,omitempty"`
 }
 
 type manifestFile struct {
@@ -63,6 +66,21 @@ type plan struct {
 	issues []manifestNote
 }
 
+type stringList []string
+
+func (s *stringList) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *stringList) Set(v string) error {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	*s = append(*s, filepath.ToSlash(v))
+	return nil
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage(os.Stderr)
@@ -92,7 +110,7 @@ func usage(w *os.File) {
 	fmt.Fprintln(w, "chantrace-patch: reversible chantrace codemod workflow")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
-	fmt.Fprintln(w, "  chantrace-patch apply [--dry-run] [packages...]")
+	fmt.Fprintln(w, "  chantrace-patch apply [--dry-run] [--include glob] [--exclude glob] [--no-send] [--no-recv] [--no-range] [packages...]")
 	fmt.Fprintln(w, "  chantrace-patch status")
 	fmt.Fprintln(w, "  chantrace-patch revert [--force]")
 	fmt.Fprintln(w)
@@ -106,7 +124,21 @@ func runApply(args []string) int {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var dryRun bool
+	var noSend bool
+	var noRecv bool
+	var noRange bool
+	var noGoNotes bool
+	var noSelectNotes bool
+	var includes stringList
+	var excludes stringList
 	fs.BoolVar(&dryRun, "dry-run", false, "print planned changes without writing files")
+	fs.BoolVar(&noSend, "no-send", false, "do not rewrite channel sends")
+	fs.BoolVar(&noRecv, "no-recv", false, "do not rewrite channel receives")
+	fs.BoolVar(&noRange, "no-range", false, "do not rewrite range-over-channel")
+	fs.BoolVar(&noGoNotes, "no-go-notes", false, "do not emit manual migration notes for go statements")
+	fs.BoolVar(&noSelectNotes, "no-select-notes", false, "do not emit manual migration notes for select statements")
+	fs.Var(&includes, "include", "path glob to include (repeatable, matches repo-relative slash paths)")
+	fs.Var(&excludes, "exclude", "path glob to exclude (repeatable, matches repo-relative slash paths)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -145,7 +177,25 @@ func runApply(args []string) int {
 		return 1
 	}
 
-	plan, err := buildPlan(root, pkgs)
+	rewriteCfg := rewriteassist.DefaultRewriteConfig()
+	rewriteCfg.RewriteSend = !noSend
+	rewriteCfg.RewriteRecv = !noRecv
+	rewriteCfg.RewriteRange = !noRange
+	rewriteCfg.ReportGoStmt = !noGoNotes
+	rewriteCfg.ReportSelect = !noSelectNotes
+
+	includePatterns := []string(includes)
+	excludePatterns := []string(excludes)
+	if err := validateGlobPatterns(includePatterns); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid --include pattern: %v\n", err)
+		return 2
+	}
+	if err := validateGlobPatterns(excludePatterns); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid --exclude pattern: %v\n", err)
+		return 2
+	}
+
+	plan, err := buildPlan(root, pkgs, rewriteCfg, includePatterns, excludePatterns)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "build patch plan: %v\n", err)
 		return 1
@@ -197,11 +247,14 @@ func runApply(args []string) int {
 	}
 
 	m := manifest{
-		ID:        patchID,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
-		Root:      root,
-		Patterns:  append([]string(nil), patterns...),
-		Issues:    plan.issues,
+		ID:            patchID,
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		Root:          root,
+		Patterns:      append([]string(nil), patterns...),
+		RewriteConfig: rewriteCfg,
+		Includes:      append([]string(nil), includePatterns...),
+		Excludes:      append([]string(nil), excludePatterns...),
+		Issues:        plan.issues,
 	}
 
 	for _, f := range plan.files {
@@ -406,8 +459,7 @@ func loadPackages(patterns []string) ([]*packages.Package, error) {
 	return pkgs, nil
 }
 
-func buildPlan(root string, pkgs []*packages.Package) (plan, error) {
-	cfg := rewriteassist.DefaultRewriteConfig()
+func buildPlan(root string, pkgs []*packages.Package, cfg rewriteassist.RewriteConfig, includes, excludes []string) (plan, error) {
 	var out plan
 
 	seen := make(map[string]struct{})
@@ -425,6 +477,15 @@ func buildPlan(root string, pkgs []*packages.Package) (plan, error) {
 				continue
 			}
 			seen[abs] = struct{}{}
+
+			rel := relPath(root, abs)
+			ok, err := matchFilePath(rel, includes, excludes)
+			if err != nil {
+				return out, err
+			}
+			if !ok {
+				continue
+			}
 
 			res := rewriteassist.RewriteFile(pkg.Fset, file, pkg.TypesInfo, cfg)
 			for _, issue := range res.Issues {
@@ -465,7 +526,6 @@ func buildPlan(root string, pkgs []*packages.Package) (plan, error) {
 			if err != nil {
 				return out, fmt.Errorf("stat source %s: %w", abs, err)
 			}
-			rel := relPath(root, abs)
 			out.files = append(out.files, plannedFile{
 				absPath:  abs,
 				relPath:  rel,
@@ -574,4 +634,41 @@ func relPath(root, target string) string {
 		return filepath.ToSlash(absTarget)
 	}
 	return filepath.ToSlash(rel)
+}
+
+func validateGlobPatterns(patterns []string) error {
+	for _, p := range patterns {
+		if _, err := filepath.Match(p, "sample/path.go"); err != nil {
+			return fmt.Errorf("%q: %w", p, err)
+		}
+	}
+	return nil
+}
+
+func matchFilePath(rel string, includes, excludes []string) (bool, error) {
+	rel = filepath.ToSlash(rel)
+	included := len(includes) == 0
+	for _, p := range includes {
+		m, err := filepath.Match(p, rel)
+		if err != nil {
+			return false, fmt.Errorf("include pattern %q: %w", p, err)
+		}
+		if m {
+			included = true
+			break
+		}
+	}
+	if !included {
+		return false, nil
+	}
+	for _, p := range excludes {
+		m, err := filepath.Match(p, rel)
+		if err != nil {
+			return false, fmt.Errorf("exclude pattern %q: %w", p, err)
+		}
+		if m {
+			return false, nil
+		}
+	}
+	return true, nil
 }

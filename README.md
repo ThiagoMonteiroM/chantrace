@@ -285,7 +285,16 @@ go run ./cmd/chantrace-patch revert
 
 `chantrace-patch` rewrites straightforward send/recv/range operations and stores
 original files under `.chantrace/patches/<id>/`. It also records manual notes
-for constructs that still need hand migration (for example `go` statements).
+for constructs that still need hand migration (for example `go` and `select`
+statements).
+
+Useful flags:
+
+```bash
+go run ./cmd/chantrace-patch apply --dry-run ./...
+go run ./cmd/chantrace-patch apply --include 'examples/*/*.go' --exclude 'examples/web_demo/*' ./...
+go run ./cmd/chantrace-patch apply --no-send --no-recv ./...
+```
 
 All three tools are additive:
 

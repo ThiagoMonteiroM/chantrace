@@ -128,6 +128,51 @@ func f() {
 	}
 }
 
+func TestRewriteFileSelectCommNotRewritten(t *testing.T) {
+	const src = `package p
+func f(ch chan int, ro <-chan int) {
+	select {
+	case ch <- 1:
+	case v := <-ro:
+		_ = v
+	default:
+	}
+}
+`
+
+	fset, file, info := mustParseAndTypecheck(t, src)
+	got := RewriteFile(fset, file, info, DefaultRewriteConfig())
+	if got.Changed {
+		t.Fatalf("Changed = true, want false (select comms must stay native)")
+	}
+	if len(got.Issues) == 0 {
+		t.Fatal("expected manual migration issue for select")
+	}
+	out := mustFormat(t, fset, file)
+	if strings.Contains(out, "chantrace.Send(") || strings.Contains(out, "chantrace.Recv(") {
+		t.Fatalf("select comm unexpectedly rewritten:\n%s", out)
+	}
+}
+
+func TestRewriteFileCanDisableSelectIssue(t *testing.T) {
+	const src = `package p
+func f(ch chan int) {
+	select {
+	case ch <- 1:
+	default:
+	}
+}
+`
+
+	fset, file, info := mustParseAndTypecheck(t, src)
+	cfg := DefaultRewriteConfig()
+	cfg.ReportSelect = false
+	got := RewriteFile(fset, file, info, cfg)
+	if len(got.Issues) != 0 {
+		t.Fatalf("issue count = %d, want 0", len(got.Issues))
+	}
+}
+
 func TestRewriteFileRespectsImportAlias(t *testing.T) {
 	const src = `package p
 import ct "github.com/khzaw/chantrace"

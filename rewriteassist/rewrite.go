@@ -23,6 +23,7 @@ type RewriteConfig struct {
 	RewriteRecv  bool
 	RewriteRange bool
 	ReportGoStmt bool
+	ReportSelect bool
 }
 
 // DefaultRewriteConfig returns the default rewrite behavior.
@@ -32,6 +33,7 @@ func DefaultRewriteConfig() RewriteConfig {
 		RewriteRecv:  true,
 		RewriteRange: true,
 		ReportGoStmt: true,
+		ReportSelect: true,
 	}
 }
 
@@ -59,9 +61,18 @@ func RewriteFile(fset *token.FileSet, file *ast.File, info *types.Info, cfg Rewr
 		return out
 	}
 
+	inSelectComm := collectSelectCommNodes(file)
+
 	astutil.Apply(file, func(c *astutil.Cursor) bool {
 		node := c.Node()
 		switch n := node.(type) {
+		case *ast.SelectStmt:
+			if cfg.ReportSelect {
+				out.Issues = append(out.Issues, RewriteIssue{
+					Position: fset.Position(n.Select),
+					Message:  "select statement requires manual migration to chantrace.Select",
+				})
+			}
 		case *ast.GoStmt:
 			if cfg.ReportGoStmt {
 				out.Issues = append(out.Issues, RewriteIssue{
@@ -70,7 +81,7 @@ func RewriteFile(fset *token.FileSet, file *ast.File, info *types.Info, cfg Rewr
 				})
 			}
 		case *ast.SendStmt:
-			if cfg.RewriteSend && isChanType(info.TypeOf(n.Chan)) {
+			if cfg.RewriteSend && !inSelectComm[node] && isChanType(info.TypeOf(n.Chan)) {
 				c.Replace(&ast.ExprStmt{
 					X: chantraceCall(qual, "Send", n.Chan, n.Value),
 				})
@@ -79,7 +90,7 @@ func RewriteFile(fset *token.FileSet, file *ast.File, info *types.Info, cfg Rewr
 				return false
 			}
 		case *ast.AssignStmt:
-			if cfg.RewriteRecv && len(n.Rhs) == 1 {
+			if cfg.RewriteRecv && !inSelectComm[node] && len(n.Rhs) == 1 {
 				if recv, ok := n.Rhs[0].(*ast.UnaryExpr); ok && recv.Op == token.ARROW && isChanType(info.TypeOf(recv.X)) {
 					name := "Recv"
 					if len(n.Lhs) == 2 {
@@ -91,7 +102,7 @@ func RewriteFile(fset *token.FileSet, file *ast.File, info *types.Info, cfg Rewr
 				}
 			}
 		case *ast.ValueSpec:
-			if cfg.RewriteRecv && len(n.Values) == 1 {
+			if cfg.RewriteRecv && !inSelectComm[node] && len(n.Values) == 1 {
 				if recv, ok := n.Values[0].(*ast.UnaryExpr); ok && recv.Op == token.ARROW && isChanType(info.TypeOf(recv.X)) {
 					n.Values[0] = chantraceCall(qual, "Recv", recv.X)
 					out.Rewrites++
@@ -105,7 +116,7 @@ func RewriteFile(fset *token.FileSet, file *ast.File, info *types.Info, cfg Rewr
 				out.Changed = true
 			}
 		case *ast.UnaryExpr:
-			if cfg.RewriteRecv && n.Op == token.ARROW && isChanType(info.TypeOf(n.X)) {
+			if cfg.RewriteRecv && !inSelectComm[node] && n.Op == token.ARROW && isChanType(info.TypeOf(n.X)) {
 				c.Replace(chantraceCall(qual, "Recv", n.X))
 				out.Rewrites++
 				out.Changed = true
@@ -119,6 +130,30 @@ func RewriteFile(fset *token.FileSet, file *ast.File, info *types.Info, cfg Rewr
 		astutil.AddImport(fset, file, chantraceImportPath)
 	}
 
+	return out
+}
+
+func collectSelectCommNodes(file *ast.File) map[ast.Node]bool {
+	out := make(map[ast.Node]bool)
+	ast.Inspect(file, func(node ast.Node) bool {
+		sel, ok := node.(*ast.SelectStmt)
+		if !ok {
+			return true
+		}
+		for _, stmt := range sel.Body.List {
+			cc, ok := stmt.(*ast.CommClause)
+			if !ok || cc.Comm == nil {
+				continue
+			}
+			ast.Inspect(cc.Comm, func(n ast.Node) bool {
+				if n != nil {
+					out[n] = true
+				}
+				return true
+			})
+		}
+		return true
+	})
 	return out
 }
 
